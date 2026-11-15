@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 UPSTREAM_URL="https://github.com/justkyriecai/nanovllm2deepinfer.git"
+# 在 fork 中从上游获取学习步骤的 tag，原仓库直接使用 origin。
 if ! git remote get-url upstream >/dev/null 2>&1 && [ "$(git remote get-url origin)" != "$UPSTREAM_URL" ]; then
   git remote add upstream "$UPSTREAM_URL"
 fi

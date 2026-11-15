@@ -23,6 +23,7 @@ class Scheduler:
         self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
+        # waiting 跨轮保留待处理请求，scheduled_seqs 只收集本轮要执行的请求。
         scheduled_seqs = []
         num_batched_tokens = 0
 
@@ -33,11 +34,13 @@ class Scheduler:
             if remaining == 0:
                 break
             if not seq.block_table:
+                # 分配前先匹配可复用的前缀，再检查空闲块是否够用。
                 num_cached_blocks = self.block_manager.can_allocate(seq)
                 if num_cached_blocks == -1:
                     break
                 num_tokens = seq.num_tokens - num_cached_blocks * self.block_size
             else:
+                # 已分配 KV 块的请求从上轮 prefill 的进度继续。
                 num_tokens = seq.num_tokens - seq.num_cached_tokens
             if remaining < num_tokens and scheduled_seqs:  # only allow chunked prefill for the first seq
                 break
@@ -45,6 +48,7 @@ class Scheduler:
                 self.block_manager.allocate(seq, num_cached_blocks)
             seq.num_scheduled_tokens = min(num_tokens, remaining)
             num_batched_tokens += seq.num_scheduled_tokens
+            # 本轮能完成 prefill 才移入 running，否则留在 waiting 等下一轮。
             if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
                 seq.status = SequenceStatus.RUNNING
                 self.waiting.popleft()
@@ -52,11 +56,13 @@ class Scheduler:
             scheduled_seqs.append(seq)
 
         if scheduled_seqs:
+            # 有可执行的 prefill 时，本轮直接返回 prefill 批次。
             return scheduled_seqs, True
 
         # decode
         while self.running and len(scheduled_seqs) < self.max_num_seqs:
             seq = self.running.popleft()
+            # KV 容量不足时从队尾抢占，优先保住当前请求的 decode。
             while not self.block_manager.can_append(seq):
                 if self.running:
                     self.preempt(self.running.pop())
@@ -83,6 +89,7 @@ class Scheduler:
             self.block_manager.hash_blocks(seq)
             seq.num_cached_tokens += seq.num_scheduled_tokens
             seq.num_scheduled_tokens = 0
+            # 中间的 prefill 分片只推进缓存进度，最后一片才接收生成的 token。
             if is_prefill and seq.num_cached_tokens < seq.num_tokens:
                 continue
             seq.append_token(token_id)

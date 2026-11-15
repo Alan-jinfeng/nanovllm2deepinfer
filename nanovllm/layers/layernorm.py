@@ -19,6 +19,7 @@ class RMSNorm(nn.Module):
         x: torch.Tensor,
     ) -> torch.Tensor:
         orig_dtype = x.dtype
+        # 用 FP32 求均方和缩放因子，归一化后转回输入精度。
         x = x.float()
         var = x.pow(2).mean(dim=-1, keepdim=True)
         x.mul_(torch.rsqrt(var + self.eps))
@@ -32,6 +33,7 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         orig_dtype = x.dtype
+        # 保存加法后的残差，供后续层继续累加。
         x = x.float().add_(residual.float())
         residual = x.to(orig_dtype)
         var = x.pow(2).mean(dim=-1, keepdim=True)

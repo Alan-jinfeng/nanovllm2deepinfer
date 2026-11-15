@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import torch
 
 
+# 保存当前批次的注意力元数据，供各模型层读取。
 @dataclass(slots=True)
 class Context:
     is_prefill: bool = False

@@ -23,9 +23,11 @@ class Sequence:
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
+        # cached 是已有 KV 的前缀长度，scheduled 是本轮待计算的 token 数。
         self.num_scheduled_tokens = 0
         self.is_prefill = True
         self.block_table = []
+        # 按序列中的逻辑块顺序保存物理 KV 块 ID。
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
@@ -74,6 +76,7 @@ class Sequence:
         return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.block_table, last_state)
 
     def __setstate__(self, state):
+        # 发往其他 rank 时，prefill 传完整 token 列表，decode 只传最后一个 token。
         self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.block_table, last_state = state
         if isinstance(last_state, list):
             self.token_ids = last_state

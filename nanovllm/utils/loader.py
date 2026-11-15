@@ -11,11 +11,13 @@ def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
 
 def load_model(model: nn.Module, path: str):
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
+    # 逐个读取 safetensors 文件，把权重交给参数自己的加载器处理分片。
     for file in glob(os.path.join(path, "*.safetensors")):
         with safe_open(file, "pt", "cpu") as f:
             for weight_name in f.keys():
                 for k in packed_modules_mapping:
                     if k in weight_name:
+                        # 合并投影由 shard_id 确定这份权重应写入的区间。
                         v, shard_id = packed_modules_mapping[k]
                         param_name = weight_name.replace(k, v)
                         param = model.get_parameter(param_name)

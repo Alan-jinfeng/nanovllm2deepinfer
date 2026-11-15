@@ -47,6 +47,7 @@ image = (
         "flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
     )
     .add_local_dir(".", REPO, ignore=["reference", ".git", "**/__pycache__", "out", ".venv"])
+    # 运行时挂载工作区，让本地源码改动随下一次调用生效。
 )
 
 app = modal.App("nanovllm2deepinfer", image=image)

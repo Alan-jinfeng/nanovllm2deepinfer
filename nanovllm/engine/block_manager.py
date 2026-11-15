@@ -35,6 +35,7 @@ class BlockManager:
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
         h = xxhash.xxh64()
+        # 将前一块的哈希纳入计算，让块的哈希对应到这里为止的整个前缀。
         if prefix != -1:
             h.update(prefix.to_bytes(8, "little"))
         h.update(np.array(token_ids).tobytes())
@@ -53,12 +54,14 @@ class BlockManager:
     def _deallocate_block(self, block_id: int):
         assert self.blocks[block_id].ref_count == 0
         self.used_block_ids.remove(block_id)
+        # 块回到空闲队列时保留前缀索引，分配给新内容时才清除。
         self.free_block_ids.append(block_id)
 
     def can_allocate(self, seq: Sequence) -> int:
         h = -1
         num_cached_blocks = 0
         num_new_blocks = seq.num_blocks
+        # 从开头匹配连续的缓存块，最后一块留给 prefill 计算。
         for i in range(seq.num_blocks - 1):
             token_ids = seq.block(i)
             h = self.compute_hash(token_ids, h)
@@ -66,6 +69,7 @@ class BlockManager:
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
                 break
             num_cached_blocks += 1
+            # 命中的在用块可共享，命中的空闲块仍会从空闲队列取走。
             if block_id in self.used_block_ids:
                 num_new_blocks -= 1
         if len(self.free_block_ids) < num_new_blocks:
@@ -108,6 +112,7 @@ class BlockManager:
             seq.block_table.append(self._allocate_block())
 
     def hash_blocks(self, seq: Sequence):
+        # 只登记本轮刚写满的块，供之后的前缀匹配复用。
         start = seq.num_cached_tokens // self.block_size
         end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size
         if start == end: return

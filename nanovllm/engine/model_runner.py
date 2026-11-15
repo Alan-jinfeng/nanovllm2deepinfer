@@ -23,6 +23,7 @@ class ModelRunner:
         self.rank = rank
         self.event = event
 
+        # 每个张量并行 rank 绑定同编号的 GPU，并加入 NCCL 通信组。
         dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
@@ -31,6 +32,7 @@ class ModelRunner:
         self.model = Qwen3ForCausalLM(hf_config)
         load_model(self.model, config.model)
         self.sampler = Sampler()
+        # 先用预热测出前向的显存峰值，再分配 KV 缓存。
         self.warmup_model()
         self.allocate_kv_cache()
         if not self.enforce_eager:
@@ -77,6 +79,7 @@ class ModelRunner:
         assert self.world_size > 1 and self.rank == 0
         data = pickle.dumps([method_name, *args])
         n = len(data)
+        # 前四字节存消息长度，写完后再通知各 worker 读取。
         self.shm.buf[0:4] = n.to_bytes(4, "little")
         self.shm.buf[4:n+4] = data
         for event in self.event:
@@ -110,6 +113,7 @@ class ModelRunner:
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * hf_config.dtype.itemsize
+        # 在显存预算中给前向峰值留出空间，剩余容量按块分给 KV 缓存。
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
         assert config.num_kvcache_blocks > 0
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim)
@@ -136,18 +140,21 @@ class ModelRunner:
         slot_mapping = []
         block_tables = None
         for seq in seqs:
+            # Q 只包含本轮新算的 token，K 的长度还包含已经缓存的前缀。
             start = seq.num_cached_tokens
             seqlen_q = seq.num_scheduled_tokens
             end = start + seqlen_q
             seqlen_k = end
             input_ids.extend(seq[start:end])
             positions.extend(range(start, end))
+            # 累计长度记录每个请求在打平的 Q、K 序列中的边界。
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
             if not seq.block_table:    # warmup
                 continue
+            # 通过块表把本轮 token 的逻辑位置换成 KV 缓存里的写入槽位。
             start_block = start // self.block_size
             end_block = (end + self.block_size - 1) // self.block_size
             for i in range(start_block, end_block):
@@ -174,6 +181,7 @@ class ModelRunner:
         positions = []
         slot_mapping = []
         context_lens = []
+        # decode 每个请求只输入最后一个 token，注意力仍覆盖完整上下文。
         for seq in seqs:
             input_ids.append(seq.last_token)
             positions.append(len(seq) - 1)
@@ -199,6 +207,7 @@ class ModelRunner:
         else:
             bs = input_ids.size(0)
             context = get_context()
+            # 选能容纳实际批次的最小图，把输入写入捕获时使用的固定缓冲区。
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
             graph_vars = self.graph_vars
             graph_vars["input_ids"][:bs] = input_ids
@@ -213,6 +222,7 @@ class ModelRunner:
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
+        # 所有 rank 参与前向，rank 0 汇集 logits 并采样。
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
@@ -235,6 +245,7 @@ class ModelRunner:
         self.graphs = {}
         self.graph_pool = None
 
+        # 从最大批次开始捕获，后续的图复用第一张图的显存池。
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
             set_context(False, slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])

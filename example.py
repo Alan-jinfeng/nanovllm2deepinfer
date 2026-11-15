@@ -13,6 +13,7 @@ def main():
         "introduce yourself",
         "list all prime numbers within 100",
     ]
+    # 用模型自己的聊天模板添加角色标记和助手生成提示。
     prompts = [
         tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],

@@ -74,6 +74,7 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        # 一次投影得到当前 rank 的 Q、K、V，再分别还原成多头形状。
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q = q.view(-1, self.num_heads, self.head_dim)
@@ -82,6 +83,7 @@ class Qwen3Attention(nn.Module):
         if not self.qkv_bias:
             q = self.q_norm(q)
             k = self.k_norm(k)
+        # RoPE 只旋转 Q 和 K，把 token 位置信息带进注意力分数。
         q, k = self.rotary_emb(positions, q, k)
         o = self.attn(q, k, v)
         output = self.o_proj(o.flatten(1, -1))
@@ -111,6 +113,7 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
+        # gate 和 up 共用一次投影，激活后相乘，再投回 hidden size。
         gate_up = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
         x = self.down_proj(x)
@@ -149,6 +152,7 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        # 保留未归一化的残差，让下一次 RMSNorm 一并完成残差加法。
         if residual is None:
             hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
         else:
@@ -184,6 +188,7 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(nn.Module):
+    # 将 checkpoint 中分开的投影权重映射到运行时的合并参数。
     packed_modules_mapping = {
         "q_proj": ("qkv_proj", "q"),
         "k_proj": ("qkv_proj", "k"),

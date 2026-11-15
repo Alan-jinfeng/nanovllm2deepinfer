@@ -23,6 +23,7 @@ class LinearBase(nn.Module):
         self.tp_rank = dist.get_rank()
         self.tp_size = dist.get_world_size()
         self.weight = nn.Parameter(torch.empty(output_size, input_size))
+        # 让 checkpoint 加载器按本层的并行方式复制权重。
         self.weight.weight_loader = self.weight_loader
         if bias:
             self.bias = nn.Parameter(torch.empty(output_size))
@@ -51,6 +52,7 @@ class ReplicatedLinear(LinearBase):
         return F.linear(x, self.weight, self.bias)
 
 
+# 按输出特征分片，每个 rank 只计算自己的输出片段。
 class ColumnParallelLinear(LinearBase):
 
     def __init__(
@@ -73,6 +75,7 @@ class ColumnParallelLinear(LinearBase):
         return F.linear(x, self.weight, self.bias)
 
 
+# 每个投影分别切分，再把当前 rank 的各分片放进同一个参数。
 class MergedColumnParallelLinear(ColumnParallelLinear):
 
     def __init__(
@@ -93,6 +96,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         param_data.copy_(loaded_weight)
 
 
+# Q、K、V 按各自的头数分片，并写入本地参数对应的区间。
 class QKVParallelLinear(ColumnParallelLinear):
 
     def __init__(
@@ -128,6 +132,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         param_data.copy_(loaded_weight)
 
 
+# 按输入特征分片，各 rank 的局部输出相加得到完整结果。
 class RowParallelLinear(LinearBase):
 
     def __init__(
@@ -150,6 +155,7 @@ class RowParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # bias 只在 rank 0 加一次，避免 all-reduce 重复累加。
         y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
         if self.tp_size > 1:
             dist.all_reduce(y)
