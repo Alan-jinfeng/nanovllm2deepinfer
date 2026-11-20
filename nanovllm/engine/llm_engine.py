@@ -50,11 +50,25 @@ class LLMEngine:
 
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
-        # token 数的符号区分两种步型，供进度条分别计算 prefill 和 decode 吞吐。
-        num_tokens = sum(seq.num_scheduled_tokens for seq in seqs) if is_prefill else -len(seqs)
+
+        # 进度条用 token 数的符号区分 prefill 和 decode。
+        if is_prefill:
+            num_tokens = 0
+            for seq in seqs:
+                num_tokens += seq.num_scheduled_tokens
+        else:
+            num_tokens = -len(seqs)
+
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         self.scheduler.postprocess(seqs, token_ids, is_prefill)
-        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+
+        outputs = []
+        for seq in seqs:
+            if not seq.is_finished:
+                continue
+            output = (seq.seq_id, seq.completion_token_ids)
+            outputs.append(output)
+
         return outputs, num_tokens
 
     def is_finished(self):
